@@ -1,0 +1,8 @@
+# Working notes, never published
+_working/
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
