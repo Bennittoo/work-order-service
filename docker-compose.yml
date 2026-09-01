@@ -1,0 +1,30 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: work-order-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      # Matches the connection string in appsettings.json. Local development only, and the reason
+      # the value is written out in full here rather than hidden is that pretending it is a secret
+      # while committing it would be worse.
+      MSSQL_SA_PASSWORD: "Local_Dev_Passw0rd!"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      # -C trusts the container's self-signed certificate, which is what TrustServerCertificate on
+      # the client side is doing too.
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  mssql-data:
