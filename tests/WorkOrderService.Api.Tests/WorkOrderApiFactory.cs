@@ -5,8 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using WorkOrderService.Api.Persistence;
 using WorkOrderService.Api.Security;
+using WorkOrderService.Application.Abstractions;
+using WorkOrderService.Application.Persistence;
 
 namespace WorkOrderService.Api.Tests;
 

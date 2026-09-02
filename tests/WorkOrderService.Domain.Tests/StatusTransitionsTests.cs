@@ -1,4 +1,5 @@
 using WorkOrderService.Domain;
+using WorkOrderService.Domain.Enumerations;
 
 namespace WorkOrderService.Domain.Tests;
 

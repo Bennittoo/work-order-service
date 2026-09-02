@@ -4,25 +4,42 @@ Design decisions, and what they cost.
 
 ## Shape of the service
 
-Two projects. `WorkOrderService.Domain` holds the entities and the status lifecycle;
-`WorkOrderService.Api` holds the endpoints, persistence and background processing.
+Three projects.
 
-**The Clean Architecture dependency rule is honoured: dependencies point inward only.** `Domain`
-references nothing, not even EF Core, so the lifecycle rules cannot be bent by a persistence or
-transport concern. `Api` depends on `Domain`, never the reverse. The concurrency token is the
-clearest evidence of the rule being taken seriously rather than stated: `RowVersion` is a plain
-`byte[]` on the entity with no `[Timestamp]` attribute, configured in the persistence layer instead,
-precisely so the domain stays provider-agnostic.
+| Project | Holds | References |
+| --- | --- | --- |
+| `Domain` | Entities and the status lifecycle | Nothing |
+| `Application` | Use cases, models, validation rules, ports, persistence | `Domain` |
+| `Api` | HTTP: requests, responses, endpoints, filters, hosted service | `Application` |
 
-What I did not do is give `Application` and `Infrastructure` their own projects. Both exist
-conceptually; they are collapsed into the composition root. With one persistence adapter, one
-transport, and no second consumer of the use cases, separate assemblies would enforce a boundary
-nothing is currently pushing against, at the cost of indirection a reviewer has to read through.
+**The Clean Architecture dependency rule is honoured: dependencies point inward only**, and `Domain`
+references nothing at all, not even EF Core. The concurrency token is the clearest evidence of the
+rule being taken seriously rather than stated: `RowVersion` is a plain `byte[]` on the entity with no
+`[Timestamp]` attribute, configured in the persistence layer instead, precisely so the domain stays
+provider-agnostic.
 
-What would make me split them: a second adapter behind the same port, such as a real broker
-alongside the in-memory queue; a second transport over the same use cases, such as a worker service
-or gRPC; or use cases complex enough to be worth testing without the HTTP layer. The first is the
-likely one, and that seam already exists.
+### Where the business logic lives, and why it is split
+
+`WorkOrderServiceManager` owns the use cases: loading, the transaction boundary, deduplication, and
+recording what happened. The endpoints and the background processor both go through it, and neither
+touches a `DbContext`.
+
+What the manager does **not** own is the status rule itself. That stays on
+`WorkOrder.ApplyStatus`, and the reason is the invariant being protected. It is not "transitions are
+legal", it is **status and history can never diverge**. Only the entity can guarantee that: the
+method that assigns `Status` is the same method that appends the history entry, and `Status` has a
+private setter so there is no other way in. Moving the rule into the manager would need a public
+setter, at which point the invariant is enforced by every caller remembering to go through the
+manager rather than by the type.
+
+So the division is: **use cases orchestrate, entities hold invariants.** That is also what Clean
+Architecture prescribes, rather than a data-only model with the rules in a service.
+
+### What is not split
+
+There is no separate `Infrastructure` project. Persistence lives in `Application`, because the
+manager depends on the `DbContext` directly and a separate project would only add a hop. A second
+adapter behind the same port would change that, and the ports already exist.
 
 The codebase has exactly two interfaces, `IProgressEventQueue` and `IUniqueConstraintDetector`, and
 both exist for the same reason: something provider or transport specific had to be replaceable
@@ -59,8 +76,8 @@ validator service is the invariant being protected. It is not "transitions are l
 appends history, and it is the only way to change status. A separate validator leaves a door open
 where someone assigns `Status` directly and no history is written.
 
-Both entry points, the HTTP status endpoint and the background processor, go through that one
-method.
+Both entry points reach that method through `WorkOrderServiceManager`, so the coordination is
+written once and the rule is enforced once.
 
 `ApplyStatus` returns three outcomes rather than a bool, and throws in two cases: an undefined enum
 value, and a `Creation` source. That split matters. `Rejected` is normal traffic that the processor
@@ -122,11 +139,15 @@ decisions hold each other up.
 **The queue sits behind an interface deliberately.** `IProgressEventQueue` has three members and no
 knowledge of channels, so replacing `ChannelProgressEventQueue` with a RabbitMQ or Azure Service Bus
 consumer is one registration in `Program.cs`. Everything that makes processing correct, the single
-`SaveChangesAsync`, the deduplication key and the outcome recording, lives in the processor and does
+`SaveChangesAsync`, the deduplication key and the outcome recording, lives in the manager and does
 not move.
 
-**A scope per event.** The processor is a singleton and `DbContext` is scoped, so each event is
-handled inside its own `IServiceScopeFactory` scope.
+**The processor owns delivery, not decisions.** Scoping, retrying and logging are its job; what to do
+with an event is `WorkOrderServiceManager.ApplyProgressEventAsync`. That split is why the same
+idempotency logic is covered by application tests with no HTTP layer involved.
+
+**A scope per event.** The processor is a singleton and the manager holds a scoped `DbContext`, so
+each event is handled inside its own `IServiceScopeFactory` scope.
 
 **try/catch per item, not around the loop.** An exception escaping `ExecuteAsync` stops the hosted
 service, which would silently end all event processing for the life of the process.
@@ -211,15 +232,22 @@ The distinction that drives everything is permanent versus transient.
 | Transient database fault | Retried by EF Core's execution strategy | `EnableRetryOnFailure`, so the processor does not reimplement it |
 | Anything else in the processor | Logged at error, event abandoned | Better than taking the host down |
 
-Validation is a generic endpoint filter, because Minimal APIs do not validate request bodies the way
-MVC model binding does and that gap has to be closed deliberately. Field length limits live in one
-`FieldLengths` class shared by the EF configurations and the validators, since two copies of those
-numbers is how you get a 500 on input that passed validation.
+Validation is split between the layer that owns the rules and the layer that owns the protocol. The
+rules are in `Application/Validations`, which knows nothing about ASP.NET Core; a generic endpoint
+filter in the API runs them and turns failures into a `ValidationProblem`. Minimal APIs do not
+validate request bodies the way MVC model binding does, and that gap has to be closed deliberately.
+
+Field length limits live in one `FieldLengths` class shared by the EF configurations and the
+validators, since two copies of those numbers is how you get a 500 on input that passed validation.
 
 ## Testing
 
-56 tests. 34 domain tests with no database, and 22 integration tests driving the real application
-through `WebApplicationFactory`.
+Three suites, one per production project. Domain tests cover the status rules with no database.
+Application tests cover the use cases against SQLite, including the idempotency requirement, without
+an HTTP layer. API tests drive the real application through `WebApplicationFactory`.
+
+Splitting the manager out is what made the middle suite possible: the idempotency behaviour can now be
+asserted directly, rather than only through a 202 and a poll.
 
 The integration tests use SQLite in a temporary file rather than in memory. In-memory SQLite lives
 inside a single open connection, and this service has two concurrent writers by design, so sharing
@@ -249,6 +277,28 @@ Everything the suite cannot reach was run against the containerised SQL Server r
 - The concurrency token, as described above.
 - The generated OpenAPI document, checked field by field rather than eyeballed in the UI.
 
+## Configuration and secrets
+
+Nothing secret is committed. The connection string and the API key come from user secrets, and the
+container password from a gitignored `.env` with a committed `.env.example` documenting it. The
+README carries the three commands.
+
+The cost is honest: a reviewer has one setup step that is not a single command. The alternative was a
+committed password labelled as non-secret, which works but teaches the wrong habit and would be the
+first thing to go wrong when someone copied the pattern into something real. Startup validation
+refuses to run without an API key rather than starting silently unprotected.
+
+## Documentation as part of the contract
+
+Every public type, member and enumeration member carries XML documentation, and
+`GenerateDocumentationFile` is on with warnings as errors, so an undocumented public member is a
+build failure rather than an intention.
+
+That is not only for readers of the code. Swashbuckle is wired to the generated XML, so the
+descriptions become the schema descriptions in the OpenAPI document: what `occurredAt` means, why
+`fromStatus` is nullable, and what each status implies are all visible in Swagger without opening the
+source.
+
 ## What I chose not to build
 
 - **MediatR or CQRS.** Four endpoints and one background handler. The indirection would cost more
@@ -256,7 +306,10 @@ Everything the suite cannot reach was run against the containerised SQL Server r
 - **A repository layer over EF Core.** `DbContext` is already a unit of work and `DbSet` is already
   a repository. Wrapping them adds a layer that has to be maintained and mocked and buys nothing
   here.
-- **An infrastructure project.** One persistence concern, no second adapter.
+- **An infrastructure project.** Persistence sits in `Application` because the manager depends on
+  the `DbContext` directly. A second adapter behind the same port would earn the split.
+- **A data-only model with the rules in the manager.** The common enterprise shape, and it would
+  cost the one invariant this design is built on. Explained above.
 - **A real message broker.** The brief specifies an in-memory queue and rules out external
   messaging. `IProgressEventQueue` is what makes that a swap rather than a rewrite: a RabbitMQ or
   Azure Service Bus implementation replaces `ChannelProgressEventQueue` and nothing else changes

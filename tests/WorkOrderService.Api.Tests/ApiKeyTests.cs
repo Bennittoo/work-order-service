@@ -1,7 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
-using WorkOrderService.Api.Contracts;
-using WorkOrderService.Domain;
+using WorkOrderService.Api.Requests;
+using WorkOrderService.Application.Models;
+using WorkOrderService.Domain.Enumerations;
 using static WorkOrderService.Api.Tests.ApiTestHelpers;
 
 namespace WorkOrderService.Api.Tests;

@@ -137,6 +137,56 @@ there. A reviewer would have hit exactly the same thing. The root now redirects 
 
 > "draft the video running order"
 
+**16.**
+
+> "Can we have an application project that will have the managers folder with the
+> WorkOrderServiceManager (for the business logic), the Model for the application model to map the
+> domain model, also I feel like the the file should have one responsibility, if it's a model should
+> have the table structure and not include the functionality, but the functionality should fall in
+> the manager ... And instead of having the secrets in appsettings file, can we have the secrets in
+> the secret file ... also the enums should have their own folder called Enumerations (And have the
+> naming conversions like StatusChangeOutcomeEnum). And all the model properties, and the enums
+> should have the descriptions ... In the API project we can have the requests and responses folders"
+
+A restructure late in the build, and the most useful exchange in the project, because two parts of it
+were pushed back on and I took the pushback.
+
+**The enum suffix I dropped.** Microsoft's Framework Design Guidelines say explicitly not to suffix
+enum type names with `Enum`. A team that lists SOLID and Clean Architecture is more likely to read
+`StatusChangeOutcomeEnum` as unfamiliarity with the guidelines than as care. I kept the
+`Enumerations` folder, which was the part that actually helped, and dropped the suffix.
+
+**The anemic model I did not take.** I had asked for a data-only model with all the logic in the
+manager. That is the common enterprise shape, and it would have cost the one property this whole
+design rests on: `Status` would need a public setter, and "status and history can never diverge"
+would stop being enforced by the type and become a convention that every caller has to remember.
+
+What I took instead is the split that gives me the layering without that loss: **the manager owns
+the use cases, the entity keeps its own invariant.** Loading, the transaction boundary,
+deduplication and outcome recording all moved into `WorkOrderServiceManager`; the transition rule
+stayed on `WorkOrder.ApplyStatus`. That is also what Clean Architecture actually prescribes, rather
+than a data bag plus a service.
+
+**Three shapes became two.** I had asked for application models and API responses as separate
+types. With one transport there is nothing for the third shape to absorb, so API requests come in
+and application models go out, and a new field is two edits rather than three.
+
+The rest went in as asked: the `Application` project with `Managers`, `Models`, `Validations`,
+`Abstractions` and `Enumerations`; a test project per production project; `Requests` and `Responses`
+folders in the API; secrets out of `appsettings.json` and into user secrets and a gitignored `.env`;
+and XML documentation on every public member, with `GenerateDocumentationFile` on and warnings as
+errors so an undocumented member fails the build.
+
+Two things I had not anticipated came out of it. The validation rules had to move to the application
+layer while the endpoint filter stayed in the API, because the filter is an `IEndpointFilter` and
+putting it in the application project would have made that project depend on ASP.NET Core, defeating
+the layering. And persistence had to move into the application project rather than staying in the
+API, because the manager depends on the `DbContext` and the reference would otherwise be circular.
+
+The payoff I did not expect: wiring the XML documentation into Swashbuckle means those descriptions
+are now the schema descriptions in the OpenAPI document, so what `occurredAt` means and why
+`fromStatus` is nullable are readable in Swagger without opening the code.
+
 ## Where I overrode it
 
 **Description was nullable; I made it required.** A work order always has one, and carrying a null

@@ -1,7 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
-using WorkOrderService.Api.Contracts;
-using WorkOrderService.Domain;
+using WorkOrderService.Api.Requests;
+using WorkOrderService.Application.Models;
+using WorkOrderService.Domain.Enumerations;
 using static WorkOrderService.Api.Tests.ApiTestHelpers;
 
 namespace WorkOrderService.Api.Tests;
@@ -24,7 +25,7 @@ public sealed class WorkOrderApiTests : IClassFixture<WorkOrderApiFactory>
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
-        var created = (await response.Content.ReadFromJsonAsync<WorkOrderDetailResponse>(Json))!;
+        var created = (await response.Content.ReadFromJsonAsync<WorkOrderModel>(Json))!;
         Assert.Equal($"/api/work-orders/{created.Id}", response.Headers.Location?.ToString());
         Assert.Equal(WorkOrderStatus.Pending, created.Status);
 
@@ -152,7 +153,7 @@ public sealed class WorkOrderApiTests : IClassFixture<WorkOrderApiFactory>
             new UpdateWorkOrderStatusRequest(WorkOrderStatus.Cancelled, "Site withdrawn"),
             Json);
 
-        var page = await _client.GetFromJsonAsync<PagedResponse<WorkOrderSummaryResponse>>(
+        var page = await _client.GetFromJsonAsync<PagedResult<WorkOrderSummaryModel>>(
             "/api/work-orders?status=cancelled", Json);
 
         Assert.NotNull(page);

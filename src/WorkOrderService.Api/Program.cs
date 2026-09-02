@@ -6,6 +6,10 @@ using WorkOrderService.Api.Persistence;
 using WorkOrderService.Api.Processing;
 using WorkOrderService.Api.Security;
 using WorkOrderService.Api.Swagger;
+using WorkOrderService.Application.Abstractions;
+using WorkOrderService.Application.Managers;
+using WorkOrderService.Application.Options;
+using WorkOrderService.Application.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,6 +24,10 @@ builder.Services.AddDbContext<WorkOrderDbContext>(options =>
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IUniqueConstraintDetector, SqlServerUniqueConstraintDetector>();
 
+// Scoped, because it holds the scoped DbContext. The background processor creates a scope per event
+// rather than capturing one.
+builder.Services.AddScoped<WorkOrderServiceManager>();
+
 builder.Services.Configure<ProgressEventOptions>(
     builder.Configuration.GetSection(ProgressEventOptions.SectionName));
 builder.Services.AddSingleton<IProgressEventQueue, ChannelProgressEventQueue>();
@@ -31,7 +39,8 @@ builder.Services.AddOptions<ApiKeyOptions>()
     .Bind(builder.Configuration.GetSection(ApiKeyOptions.SectionName))
     .Validate(
         options => !string.IsNullOrWhiteSpace(options.Value),
-        $"{ApiKeyOptions.SectionName}:{nameof(ApiKeyOptions.Value)} must be configured.")
+        $"{ApiKeyOptions.SectionName}:{nameof(ApiKeyOptions.Value)} is not configured. "
+        + "See the README: it is supplied through user secrets rather than appsettings.")
     .ValidateOnStart();
 
 builder.Services.AddProblemDetails();
@@ -64,6 +73,13 @@ builder.Services.AddSwaggerGen(options =>
 
     // The API emits enums as strings; without this the document would describe them as integers.
     options.SchemaFilter<StringEnumSchemaFilter>();
+
+    // Surfaces the XML documentation on the models and enums as schema descriptions, so the contract
+    // is readable in Swagger without opening the code.
+    foreach (var documentation in Directory.GetFiles(AppContext.BaseDirectory, "WorkOrderService.*.xml"))
+    {
+        options.IncludeXmlComments(documentation);
+    }
 });
 
 var app = builder.Build();

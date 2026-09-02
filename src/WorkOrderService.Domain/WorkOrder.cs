@@ -1,5 +1,15 @@
+using WorkOrderService.Domain.Enumerations;
+
 namespace WorkOrderService.Domain;
 
+/// <summary>
+/// One unit of work at one site, and the aggregate root for its status trail.
+/// </summary>
+/// <remarks>
+/// The invariant this type protects is that status and history can never disagree. That is why
+/// <see cref="ApplyStatus"/> is the only way to change <see cref="Status"/>, and why it writes the
+/// history entry itself rather than leaving that to a caller.
+/// </remarks>
 public sealed class WorkOrder
 {
     private readonly List<StatusHistoryEntry> _statusHistory = new();
@@ -8,6 +18,7 @@ public sealed class WorkOrder
     {
     }
 
+    /// <summary>Identifier assigned by this service.</summary>
     public Guid Id { get; private set; }
 
     /// <summary>
@@ -16,24 +27,38 @@ public sealed class WorkOrder
     /// </summary>
     public string ExternalId { get; private set; } = string.Empty;
 
+    /// <summary>The site the work is being done at, for example <c>JHB-042</c>.</summary>
     public string SiteCode { get; private set; } = string.Empty;
 
+    /// <summary>What the work is.</summary>
     public string Description { get; private set; } = string.Empty;
 
+    /// <summary>Current lifecycle position. Always equal to the last history entry's <see cref="StatusHistoryEntry.ToStatus"/>.</summary>
     public WorkOrderStatus Status { get; private set; }
 
+    /// <summary>When the work order was created.</summary>
     public DateTimeOffset CreatedAt { get; private set; }
 
+    /// <summary>When the status last changed. Equal to <see cref="CreatedAt"/> until the first change.</summary>
     public DateTimeOffset UpdatedAt { get; private set; }
 
     /// <summary>
-    /// Optimistic concurrency token, configured in the persistence layer so the domain stays free of
-    /// EF Core. It guards against the API and the background worker writing the same row at once.
+    /// Optimistic concurrency token, configured in the persistence layer so this project stays free
+    /// of EF Core. It guards against the API and the background worker writing the same row at once.
     /// </summary>
     public byte[] RowVersion { get; private set; } = Array.Empty<byte>();
 
+    /// <summary>The full status trail, oldest first as written. Read-only: entries are appended by <see cref="ApplyStatus"/> alone.</summary>
     public IReadOnlyCollection<StatusHistoryEntry> StatusHistory => _statusHistory.AsReadOnly();
 
+    /// <summary>
+    /// Creates a work order in <see cref="WorkOrderStatus.Pending"/> with its first history entry.
+    /// </summary>
+    /// <param name="externalId">The upstream system's key. Required.</param>
+    /// <param name="siteCode">The site the work is at. Required.</param>
+    /// <param name="description">What the work is. Required.</param>
+    /// <param name="now">The current time, supplied by the caller so the domain stays deterministic.</param>
+    /// <exception cref="ArgumentException">A required value is missing or blank.</exception>
     public static WorkOrder Create(string externalId, string siteCode, string description, DateTimeOffset now)
     {
         var workOrder = new WorkOrder
@@ -53,9 +78,21 @@ public sealed class WorkOrder
     }
 
     /// <summary>
-    /// The only way to change status. Appending the history entry lives here, alongside the assignment
-    /// it describes, so that status and history cannot diverge.
+    /// The only way to change status. Appending the history entry lives here, alongside the
+    /// assignment it describes, so that status and history cannot diverge.
     /// </summary>
+    /// <param name="newStatus">The proposed status.</param>
+    /// <param name="source">Which entry point is asking.</param>
+    /// <param name="occurredAt">When the change happened according to its source.</param>
+    /// <param name="now">When this service is recording it.</param>
+    /// <param name="details">Optional free text to store against the change.</param>
+    /// <param name="eventId">The progress event responsible, where there is one.</param>
+    /// <returns>
+    /// Applied when the status changed, NoOp when it already held the requested status, or Rejected
+    /// when the move is not legal. None of the three throws.
+    /// </returns>
+    /// <exception cref="ArgumentOutOfRangeException">The status is not a defined value.</exception>
+    /// <exception cref="ArgumentException">The source is Creation, which only Create may record.</exception>
     public StatusChangeResult ApplyStatus(
         WorkOrderStatus newStatus,
         StatusChangeSource source,

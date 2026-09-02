@@ -1,22 +1,20 @@
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using WorkOrderService.Api.Contracts;
-using WorkOrderService.Api.Persistence;
+using WorkOrderService.Api.Requests;
 using WorkOrderService.Api.Security;
 using WorkOrderService.Api.Validation;
-using WorkOrderService.Domain;
+using WorkOrderService.Application.Enumerations;
+using WorkOrderService.Application.Managers;
+using WorkOrderService.Application.Models;
+using WorkOrderService.Application.Validations;
 
 namespace WorkOrderService.Api.Endpoints;
 
+/// <summary>The work order routes.</summary>
 public static class WorkOrderEndpoints
 {
-    /// <summary>
-    /// Fixed, as the brief allows. Callers page with <c>?page=</c> and cannot ask for an unbounded
-    /// result set.
-    /// </summary>
-    public const int PageSize = 25;
-
+    /// <summary>Maps the work order routes onto the application.</summary>
+    /// <param name="app">The route builder to map onto.</param>
     public static RouteGroupBuilder MapWorkOrderEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/work-orders").WithTags("Work orders");
@@ -45,177 +43,80 @@ public static class WorkOrderEndpoints
         return group;
     }
 
-    private static async Task<Results<Created<WorkOrderDetailResponse>, Conflict<ProblemDetails>>> CreateAsync(
+    private static async Task<Results<Created<WorkOrderModel>, Conflict<ProblemDetails>>> CreateAsync(
         CreateWorkOrderRequest request,
-        WorkOrderDbContext db,
-        TimeProvider clock,
-        IUniqueConstraintDetector uniqueConstraints,
+        WorkOrderServiceManager manager,
         CancellationToken cancellationToken)
     {
-        var now = clock.GetUtcNow();
-        var workOrder = WorkOrder.Create(request.ExternalId!, request.SiteCode!, request.Description!, now);
+        var result = await manager.CreateAsync(
+            request.ExternalId!, request.SiteCode!, request.Description!, cancellationToken);
 
-        db.WorkOrders.Add(workOrder);
-
-        try
+        if (result.Outcome == CreateWorkOrderOutcome.DuplicateExternalId)
         {
-            await db.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateException exception) when (uniqueConstraints.IsUniqueViolation(exception))
-        {
-            // The unique index is the authority, not a prior existence check, which would race.
             return TypedResults.Conflict(new ProblemDetails
             {
                 Title = "Duplicate external identifier",
-                Detail = $"A work order with external identifier '{request.ExternalId}' already exists.",
+                Detail = result.Detail,
                 Status = StatusCodes.Status409Conflict
             });
         }
 
-        return TypedResults.Created($"/api/work-orders/{workOrder.Id}", ToDetail(workOrder));
+        var created = result.WorkOrder!;
+        return TypedResults.Created($"/api/work-orders/{created.Id}", created);
     }
 
-    private static async Task<Results<Ok<WorkOrderDetailResponse>, NotFound>> GetByIdAsync(
+    private static async Task<Results<Ok<WorkOrderModel>, NotFound>> GetByIdAsync(
         Guid id,
-        WorkOrderDbContext db,
+        WorkOrderServiceManager manager,
         CancellationToken cancellationToken)
     {
-        var response = await db.WorkOrders
-            .AsNoTracking()
-            .Where(w => w.Id == id)
-            .Select(w => new WorkOrderDetailResponse(
-                w.Id,
-                w.ExternalId,
-                w.SiteCode,
-                w.Description,
-                w.Status,
-                w.CreatedAt,
-                w.UpdatedAt,
-                w.StatusHistory
-                    .OrderBy(h => h.RecordedAt)
-                    .Select(h => new StatusHistoryEntryResponse(
-                        h.FromStatus, h.ToStatus, h.OccurredAt, h.RecordedAt, h.Source, h.Details, h.EventId))
-                    .ToList()))
-            .FirstOrDefaultAsync(cancellationToken);
+        var workOrder = await manager.GetAsync(id, cancellationToken);
 
-        return response is null ? TypedResults.NotFound() : TypedResults.Ok(response);
+        return workOrder is null ? TypedResults.NotFound() : TypedResults.Ok(workOrder);
     }
 
-    private static async Task<Results<Ok<PagedResponse<WorkOrderSummaryResponse>>, ValidationProblem>> ListAsync(
-        WorkOrderDbContext db,
+    private static async Task<Results<Ok<PagedResult<WorkOrderSummaryModel>>, ValidationProblem>> ListAsync(
+        WorkOrderServiceManager manager,
         CancellationToken cancellationToken,
         string? status = null,
         int page = 1)
     {
-        var errors = new Dictionary<string, string[]>();
+        var validation = WorkOrderValidator.ValidateListQuery(status, page);
 
-        WorkOrderStatus? filter = null;
-        if (!string.IsNullOrWhiteSpace(status))
+        if (validation.Errors.Count > 0)
         {
-            if (Enum.TryParse<WorkOrderStatus>(status, ignoreCase: true, out var parsed) && Enum.IsDefined(parsed))
-            {
-                filter = parsed;
-            }
-            else
-            {
-                errors[nameof(status)] =
-                    [$"Unknown status. Expected one of: {string.Join(", ", Enum.GetNames<WorkOrderStatus>())}."];
-            }
+            return TypedResults.ValidationProblem(validation.Errors);
         }
 
-        if (page < 1)
-        {
-            errors[nameof(page)] = ["Must be 1 or greater."];
-        }
+        var results = await manager.ListAsync(validation.Status, validation.Page, cancellationToken);
 
-        if (errors.Count > 0)
-        {
-            return TypedResults.ValidationProblem(errors);
-        }
-
-        var query = db.WorkOrders.AsNoTracking();
-        if (filter is { } wanted)
-        {
-            query = query.Where(w => w.Status == wanted);
-        }
-
-        var totalCount = await query.CountAsync(cancellationToken);
-
-        var items = await query
-            // Id is a tie-break, without which two work orders sharing a CreatedAt could appear on
-            // two pages or on none.
-            .OrderByDescending(w => w.CreatedAt)
-            .ThenBy(w => w.Id)
-            .Skip((page - 1) * PageSize)
-            .Take(PageSize)
-            .Select(w => new WorkOrderSummaryResponse(
-                w.Id, w.ExternalId, w.SiteCode, w.Description, w.Status, w.CreatedAt, w.UpdatedAt))
-            .ToListAsync(cancellationToken);
-
-        var totalPages = (int)Math.Ceiling(totalCount / (double)PageSize);
-
-        return TypedResults.Ok(new PagedResponse<WorkOrderSummaryResponse>(
-            items, page, PageSize, totalCount, totalPages));
+        return TypedResults.Ok(results);
     }
 
-    private static async Task<Results<Ok<WorkOrderDetailResponse>, NotFound, Conflict<ProblemDetails>>> UpdateStatusAsync(
+    private static async Task<Results<Ok<WorkOrderModel>, NotFound, Conflict<ProblemDetails>>> UpdateStatusAsync(
         Guid id,
         UpdateWorkOrderStatusRequest request,
-        WorkOrderDbContext db,
-        TimeProvider clock,
+        WorkOrderServiceManager manager,
         CancellationToken cancellationToken)
     {
-        var workOrder = await db.WorkOrders
-            .Include(w => w.StatusHistory)
-            .FirstOrDefaultAsync(w => w.Id == id, cancellationToken);
+        var result = await manager.ChangeStatusAsync(id, request.Status, request.Details, cancellationToken);
 
-        if (workOrder is null)
+        return result.Outcome switch
         {
-            return TypedResults.NotFound();
-        }
-
-        var now = clock.GetUtcNow();
-        var result = workOrder.ApplyStatus(request.Status, StatusChangeSource.Api, now, now, request.Details);
-
-        if (result.WasRejected)
-        {
-            return TypedResults.Conflict(new ProblemDetails
+            ChangeStatusOutcome.Updated => TypedResults.Ok(result.WorkOrder!),
+            ChangeStatusOutcome.NotFound => TypedResults.NotFound(),
+            ChangeStatusOutcome.Rejected => TypedResults.Conflict(new ProblemDetails
             {
                 Title = "Status change not allowed",
-                Detail = result.Reason,
+                Detail = result.Detail,
                 Status = StatusCodes.Status409Conflict
-            });
-        }
-
-        try
-        {
-            await db.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            // The background worker changed this work order between the read and the write.
-            return TypedResults.Conflict(new ProblemDetails
+            }),
+            _ => TypedResults.Conflict(new ProblemDetails
             {
                 Title = "Work order changed concurrently",
-                Detail = "The work order was modified while this request was in flight. Re-read it and try again.",
+                Detail = result.Detail,
                 Status = StatusCodes.Status409Conflict
-            });
-        }
-
-        return TypedResults.Ok(ToDetail(workOrder));
+            })
+        };
     }
-
-    private static WorkOrderDetailResponse ToDetail(WorkOrder workOrder) =>
-        new(workOrder.Id,
-            workOrder.ExternalId,
-            workOrder.SiteCode,
-            workOrder.Description,
-            workOrder.Status,
-            workOrder.CreatedAt,
-            workOrder.UpdatedAt,
-            workOrder.StatusHistory
-                .OrderBy(h => h.RecordedAt)
-                .Select(h => new StatusHistoryEntryResponse(
-                    h.FromStatus, h.ToStatus, h.OccurredAt, h.RecordedAt, h.Source, h.Details, h.EventId))
-                .ToList());
 }

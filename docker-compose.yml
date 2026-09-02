@@ -5,10 +5,8 @@ services:
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_PID: Developer
-      # Matches the connection string in appsettings.json. Local development only, and the reason
-      # the value is written out in full here rather than hidden is that pretending it is a secret
-      # while committing it would be worse.
-      MSSQL_SA_PASSWORD: "Local_Dev_Passw0rd!"
+      # Read from .env, which is not committed. Copy .env.example to .env and set your own value.
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in .env, see .env.example}
     ports:
       # Published on 14330 rather than 1433 on purpose. A developer machine with SQL Server already
       # installed is listening on 1433, and Windows lets both bind it, so the local instance wins the

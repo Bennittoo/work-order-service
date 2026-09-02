@@ -1,40 +1,49 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using WorkOrderService.Api.Persistence;
-using WorkOrderService.Domain;
+using WorkOrderService.Application.Abstractions;
+using WorkOrderService.Application.Managers;
+using WorkOrderService.Application.Models;
+using WorkOrderService.Application.Options;
 
 namespace WorkOrderService.Api.Processing;
 
 /// <summary>
-/// Single consumer of the progress event queue. One consumer serialises every event driven change,
-/// which removes lost updates between events without per-work-order locking. The optimistic
-/// concurrency token still earns its place, because the HTTP status endpoint is a second writer.
+/// Single consumer of the progress event queue.
 /// </summary>
+/// <remarks>
+/// One consumer serialises every event driven change, which removes lost updates between events
+/// without per-work-order locking. The optimistic concurrency token still earns its place, because
+/// the HTTP status endpoint is a second writer.
+/// <para>
+/// This type owns delivery concerns only: scoping, retrying and logging. What to do with an event is
+/// the manager's decision.
+/// </para>
+/// </remarks>
 public sealed class ProgressEventProcessor : BackgroundService
 {
     private readonly IProgressEventQueue _queue;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IUniqueConstraintDetector _uniqueConstraints;
-    private readonly TimeProvider _clock;
     private readonly ProgressEventOptions _options;
     private readonly ILogger<ProgressEventProcessor> _logger;
 
+    /// <summary>Creates the processor.</summary>
+    /// <param name="queue">The queue to consume.</param>
+    /// <param name="scopeFactory">Creates a dependency injection scope per event.</param>
+    /// <param name="options">Supplies the retry limit.</param>
+    /// <param name="logger">Receives processing outcomes.</param>
     public ProgressEventProcessor(
         IProgressEventQueue queue,
         IServiceScopeFactory scopeFactory,
-        IUniqueConstraintDetector uniqueConstraints,
-        TimeProvider clock,
         IOptions<ProgressEventOptions> options,
         ILogger<ProgressEventProcessor> logger)
     {
         _queue = queue;
         _scopeFactory = scopeFactory;
-        _uniqueConstraints = uniqueConstraints;
-        _clock = clock;
         _options = options.Value;
         _logger = logger;
     }
 
+    /// <inheritdoc />
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         // Close the queue before the base class signals the stopping token, so the loop below sees
@@ -43,6 +52,7 @@ public sealed class ProgressEventProcessor : BackgroundService
         await base.StopAsync(cancellationToken);
     }
 
+    /// <inheritdoc />
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
@@ -78,21 +88,22 @@ public sealed class ProgressEventProcessor : BackgroundService
     {
         for (var attempt = 1; attempt <= _options.MaxProcessingAttempts; attempt++)
         {
+            // The processor is a singleton and the manager holds a scoped DbContext, so each event is
+            // handled inside its own scope.
+            using var scope = _scopeFactory.CreateScope();
+            var manager = scope.ServiceProvider.GetRequiredService<WorkOrderServiceManager>();
+
             try
             {
-                if (await ApplyAsync(message) is { } outcome)
+                if (await manager.ApplyProgressEventAsync(message) is { } outcome)
                 {
                     _logger.LogInformation("Progress event processed with outcome {Outcome}.", outcome);
                 }
+                else
+                {
+                    _logger.LogInformation("Progress event already processed; duplicate ignored.");
+                }
 
-                return;
-            }
-            catch (DbUpdateException exception) when (_uniqueConstraints.IsUniqueViolation(exception))
-            {
-                // Reached only when a redelivery slips past the existence check in ApplyAsync,
-                // which the check cannot prevent because it is a read before a write. The unique
-                // key is the authority; the check only keeps the common case off this path.
-                _logger.LogInformation("Progress event already processed; duplicate ignored on write.");
                 return;
             }
             catch (DbUpdateConcurrencyException) when (attempt < _options.MaxProcessingAttempts)
@@ -108,76 +119,5 @@ public sealed class ProgressEventProcessor : BackgroundService
         _logger.LogError(
             "Giving up on progress event after {Attempts} concurrency conflicts.",
             _options.MaxProcessingAttempts);
-    }
-
-    /// <summary>
-    /// Applies one event, returning null if it had already been handled. The work order change, its
-    /// history entry and the record marking the event handled all go through a single
-    /// <c>SaveChangesAsync</c>, so they share one transaction: an event is only ever marked
-    /// processed if its effect actually committed.
-    /// </summary>
-    private async Task<ProcessedEventOutcome?> ApplyAsync(ProgressEventMessage message)
-    {
-        // The processor is a singleton and DbContext is scoped, so a scope per event is required.
-        using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<WorkOrderDbContext>();
-
-        // Redelivery is ordinary traffic from an at-least-once source, so the common duplicate is
-        // recognised with a read rather than by letting an insert fail. This is an optimisation, not
-        // the guard: it cannot close the window between the read and the write, which is why the
-        // unique key still has to be there and still has to be caught.
-        if (await db.ProcessedEvents.AnyAsync(e => e.EventId == message.EventId))
-        {
-            _logger.LogInformation("Progress event already processed; duplicate ignored.");
-            return null;
-        }
-
-        var workOrder = await db.WorkOrders
-            .Include(w => w.StatusHistory)
-            .FirstOrDefaultAsync(w => w.ExternalId == message.WorkOrderExternalId);
-
-        var now = _clock.GetUtcNow();
-        ProcessedEventOutcome outcome;
-        string? detail;
-
-        if (workOrder is null)
-        {
-            // Recorded rather than thrown away: without a row here the same unknown identifier would
-            // be reprocessed on every redelivery, and there would be no trace that it ever arrived.
-            outcome = ProcessedEventOutcome.WorkOrderNotFound;
-            detail = $"No work order exists with external identifier '{message.WorkOrderExternalId}'.";
-            _logger.LogWarning("Progress event names a work order that does not exist.");
-        }
-        else
-        {
-            var result = workOrder.ApplyStatus(
-                message.NewStatus,
-                StatusChangeSource.ProgressEvent,
-                message.OccurredAt,
-                now,
-                message.Details,
-                message.EventId);
-
-            outcome = result.Outcome switch
-            {
-                StatusChangeOutcome.Applied => ProcessedEventOutcome.Applied,
-                StatusChangeOutcome.NoOp => ProcessedEventOutcome.NoOp,
-                _ => ProcessedEventOutcome.Rejected
-            };
-            detail = result.Reason;
-        }
-
-        db.ProcessedEvents.Add(ProcessedEvent.Handled(
-            message.EventId,
-            message.WorkOrderExternalId,
-            workOrder?.Id,
-            outcome,
-            detail,
-            message.OccurredAt,
-            now));
-
-        await db.SaveChangesAsync();
-
-        return outcome;
     }
 }

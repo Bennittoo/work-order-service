@@ -11,6 +11,7 @@ namespace WorkOrderService.Api.Swagger;
 /// </summary>
 public sealed class StringEnumSchemaFilter : ISchemaFilter
 {
+    /// <inheritdoc />
     public void Apply(OpenApiSchema schema, SchemaFilterContext context)
     {
         var type = Nullable.GetUnderlyingType(context.Type) ?? context.Type;

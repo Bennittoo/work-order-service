@@ -12,8 +12,11 @@ public sealed class ApiKeyEndpointFilter : IEndpointFilter
 {
     private readonly ApiKeyOptions _options;
 
+    /// <summary>Creates the filter.</summary>
+    /// <param name="options">Supplies the expected key and the header to read it from.</param>
     public ApiKeyEndpointFilter(IOptions<ApiKeyOptions> options) => _options = options.Value;
 
+    /// <inheritdoc />
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         var supplied = context.HttpContext.Request.Headers[_options.HeaderName].ToString();

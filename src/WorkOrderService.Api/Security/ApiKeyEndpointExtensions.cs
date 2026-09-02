@@ -2,9 +2,12 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace WorkOrderService.Api.Security;
 
-/// <summary>Marker metadata, so the OpenAPI document can tell which operations are protected.</summary>
+/// <summary>
+/// Marker metadata, so the OpenAPI document can tell which operations are protected.
+/// </summary>
 public sealed class ApiKeyRequirementMetadata;
 
+/// <summary>Route conventions for requiring an API key.</summary>
 public static class ApiKeyEndpointExtensions
 {
     /// <summary>
@@ -12,6 +15,7 @@ public static class ApiKeyEndpointExtensions
     /// One call so the three cannot drift apart: an endpoint that enforces a key but is documented as
     /// open is a worse contract than one with no document at all.
     /// </summary>
+    /// <param name="builder">The route being protected.</param>
     public static RouteHandlerBuilder RequireApiKey(this RouteHandlerBuilder builder) =>
         builder
             .AddEndpointFilter<ApiKeyEndpointFilter>()

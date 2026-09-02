@@ -1,7 +1,8 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using WorkOrderService.Api.Contracts;
+using WorkOrderService.Api.Requests;
+using WorkOrderService.Application.Models;
 
 namespace WorkOrderService.Api.Tests;
 
@@ -14,7 +15,7 @@ public static class ApiTestHelpers
 
     public static string UniqueExternalId() => $"EXT-{Guid.NewGuid():N}"[..20];
 
-    public static async Task<WorkOrderDetailResponse> CreateWorkOrderAsync(
+    public static async Task<WorkOrderModel> CreateWorkOrderAsync(
         this HttpClient client, string externalId, string siteCode = "JHB-042")
     {
         var response = await client.PostAsJsonAsync(
@@ -24,15 +25,15 @@ public static class ApiTestHelpers
 
         response.EnsureSuccessStatusCode();
 
-        return (await response.Content.ReadFromJsonAsync<WorkOrderDetailResponse>(Json))!;
+        return (await response.Content.ReadFromJsonAsync<WorkOrderModel>(Json))!;
     }
 
-    public static async Task<WorkOrderDetailResponse> GetWorkOrderAsync(this HttpClient client, Guid id)
+    public static async Task<WorkOrderModel> GetWorkOrderAsync(this HttpClient client, Guid id)
     {
         var response = await client.GetAsync($"/api/work-orders/{id}");
         response.EnsureSuccessStatusCode();
 
-        return (await response.Content.ReadFromJsonAsync<WorkOrderDetailResponse>(Json))!;
+        return (await response.Content.ReadFromJsonAsync<WorkOrderModel>(Json))!;
     }
 
     /// <summary>

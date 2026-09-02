@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WorkOrderService.Domain\WorkOrderService.Domain.csproj" />
+    <ProjectReference Include="..\WorkOrderService.Application\WorkOrderService.Application.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -15,6 +16,7 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <UserSecretsId>1a11e90f-99ea-4fcf-b933-44bbb291adae</UserSecretsId>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>

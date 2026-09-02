@@ -1,15 +1,20 @@
 using Microsoft.AspNetCore.Http.HttpResults;
-using WorkOrderService.Api.Contracts;
-using WorkOrderService.Api.Processing;
+using WorkOrderService.Api.Requests;
+using WorkOrderService.Api.Responses;
 using WorkOrderService.Api.Security;
 using WorkOrderService.Api.Validation;
+using WorkOrderService.Application.Abstractions;
+using WorkOrderService.Application.Models;
 
 namespace WorkOrderService.Api.Endpoints;
 
+/// <summary>The progress event ingestion route.</summary>
 public static class ProgressEventEndpoints
 {
     private const int RetryAfterSeconds = 5;
 
+    /// <summary>Maps the progress event route onto the application.</summary>
+    /// <param name="app">The route builder to map onto.</param>
     public static RouteGroupBuilder MapProgressEventEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/progress-events").WithTags("Progress events");

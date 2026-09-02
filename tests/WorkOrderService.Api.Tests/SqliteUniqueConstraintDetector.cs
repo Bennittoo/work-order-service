@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
-using WorkOrderService.Api.Persistence;
+using WorkOrderService.Application.Abstractions;
+using WorkOrderService.Application.Persistence;
 
 namespace WorkOrderService.Api.Tests;
 

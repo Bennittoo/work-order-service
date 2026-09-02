@@ -10,8 +10,10 @@ namespace WorkOrderService.Api.Swagger;
 /// </summary>
 public sealed class ApiKeySecurityOperationFilter : IOperationFilter
 {
+    /// <summary>The identifier of the security scheme this filter references.</summary>
     public const string SchemeId = "ApiKey";
 
+    /// <inheritdoc />
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
         var requiresKey = context.ApiDescription.ActionDescriptor.EndpointMetadata

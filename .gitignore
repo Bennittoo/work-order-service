@@ -10,3 +10,6 @@ obj/
 # Visual Studio may regenerate the XML solution format, which the .NET 8 SDK cannot open and
 # which breaks root-level dotnet build/test by making the folder ambiguous.
 *.slnx
+
+# Local secrets. The committed .env.example documents what belongs here.
+.env

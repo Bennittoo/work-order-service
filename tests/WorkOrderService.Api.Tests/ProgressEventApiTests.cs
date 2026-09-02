@@ -3,10 +3,13 @@ using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using WorkOrderService.Api.Contracts;
-using WorkOrderService.Api.Persistence;
 using WorkOrderService.Api.Processing;
-using WorkOrderService.Domain;
+using WorkOrderService.Api.Requests;
+using WorkOrderService.Application.Abstractions;
+using WorkOrderService.Application.Enumerations;
+using WorkOrderService.Application.Models;
+using WorkOrderService.Application.Persistence;
+using WorkOrderService.Domain.Enumerations;
 using static WorkOrderService.Api.Tests.ApiTestHelpers;
 
 namespace WorkOrderService.Api.Tests;
