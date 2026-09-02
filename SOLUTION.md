@@ -4,13 +4,30 @@ Design decisions, and what they cost.
 
 ## Shape of the service
 
-Two projects. `WorkOrderService.Domain` holds the entities and the status lifecycle and has no EF
-Core reference; `WorkOrderService.Api` holds the endpoints, persistence and background processing.
+Two projects. `WorkOrderService.Domain` holds the entities and the status lifecycle;
+`WorkOrderService.Api` holds the endpoints, persistence and background processing.
 
-The domain is separate for one concrete reason: the lifecycle rules are the only real business logic
-here, and they should be testable without a database. That is worth a project boundary. A third
-infrastructure project would not have been, because there is a single persistence concern and no
-second adapter to abstract over.
+**The Clean Architecture dependency rule is honoured: dependencies point inward only.** `Domain`
+references nothing, not even EF Core, so the lifecycle rules cannot be bent by a persistence or
+transport concern. `Api` depends on `Domain`, never the reverse. The concurrency token is the
+clearest evidence of the rule being taken seriously rather than stated: `RowVersion` is a plain
+`byte[]` on the entity with no `[Timestamp]` attribute, configured in the persistence layer instead,
+precisely so the domain stays provider-agnostic.
+
+What I did not do is give `Application` and `Infrastructure` their own projects. Both exist
+conceptually; they are collapsed into the composition root. With one persistence adapter, one
+transport, and no second consumer of the use cases, separate assemblies would enforce a boundary
+nothing is currently pushing against, at the cost of indirection a reviewer has to read through.
+
+What would make me split them: a second adapter behind the same port, such as a real broker
+alongside the in-memory queue; a second transport over the same use cases, such as a worker service
+or gRPC; or use cases complex enough to be worth testing without the HTTP layer. The first is the
+likely one, and that seam already exists.
+
+The codebase has exactly two interfaces, `IProgressEventQueue` and `IUniqueConstraintDetector`, and
+both exist for the same reason: something provider or transport specific had to be replaceable
+without changing the logic that depends on it. That is the only justification I would accept for an
+abstraction at this size.
 
 There is no MediatR, no CQRS, no repository layer over EF Core, and no event sourcing. Reasons in
 [What I chose not to build](#what-i-chose-not-to-build).
@@ -101,6 +118,12 @@ acknowledgement a lie. Blocking trades a bounded queue for unbounded request lat
 backpressure into connection exhaustion. Rejecting tells the caller the truth, and it is only safe
 because processing is idempotent, so the resubmission being requested cannot double-apply. Those two
 decisions hold each other up.
+
+**The queue sits behind an interface deliberately.** `IProgressEventQueue` has three members and no
+knowledge of channels, so replacing `ChannelProgressEventQueue` with a RabbitMQ or Azure Service Bus
+consumer is one registration in `Program.cs`. Everything that makes processing correct, the single
+`SaveChangesAsync`, the deduplication key and the outcome recording, lives in the processor and does
+not move.
 
 **A scope per event.** The processor is a singleton and `DbContext` is scoped, so each event is
 handled inside its own `IServiceScopeFactory` scope.
@@ -207,6 +230,9 @@ What the integration tests do not cover, and why, is listed in the README: concu
 (SQLite has no `rowversion`) and the migration itself (it contains SQL Server specifics, so the test
 schema is built from the model instead). The migration was applied to a real SQL Server by hand.
 
+Tests are written Arrange, Act, Assert, and named as a sentence describing the behaviour rather than
+the method under test, so a failure reads as a broken rule rather than a broken function.
+
 Provider-specific behaviour sits behind `IUniqueConstraintDetector`, so the tests swap the
 interpretation of a unique-key violation rather than the logic that depends on it.
 
@@ -231,8 +257,11 @@ Everything the suite cannot reach was run against the containerised SQL Server r
   a repository. Wrapping them adds a layer that has to be maintained and mocked and buys nothing
   here.
 - **An infrastructure project.** One persistence concern, no second adapter.
-- **A real message broker.** The brief specifies an in-memory queue. The honest consequence is
-  stated below.
+- **A real message broker.** The brief specifies an in-memory queue and rules out external
+  messaging. `IProgressEventQueue` is what makes that a swap rather than a rewrite: a RabbitMQ or
+  Azure Service Bus implementation replaces `ChannelProgressEventQueue` and nothing else changes
+  shape. What would genuinely change is the acknowledgement point, because a broker gives you
+  redelivery, which is what would finally make the retry loop earn its keep.
 - **A transactional inbox** (persist the event on receipt, queue its id, mark it done after
   processing). This is the correct production answer to the durability gap, and it was tempting. It
   is scope the brief did not ask for.
@@ -247,13 +276,19 @@ Everything the suite cannot reach was run against the containerised SQL Server r
 
 1. **An in-memory queue loses accepted-but-unprocessed events if the process dies.** Shutdown drains
    the queue, so an orderly stop is safe; a crash or a kill is not. Events already answered with a
-   202 would be lost. The fixes are a durable broker or the transactional inbox above. This is the
-   most important trade-off in the service and it is a direct consequence of the brief's constraint.
+   202 would be lost. The fixes are a durable broker, RabbitMQ or Azure Service Bus behind the
+   existing `IProgressEventQueue`, or the transactional inbox above. This is the most important
+   trade-off in the service and it is a direct consequence of the brief's constraint.
 2. **`ProcessedEvents` grows without bound.**
 3. **One consumer caps throughput**, deliberately. Partitioning is the way out.
 4. **Random GUID primary keys** fragment clustered indexes. Mitigated on `ProcessedEvents`, not on
    `WorkOrders`.
 5. **The API key is a single shared secret** with no rotation, per-caller identity, or rate
-   limiting. It satisfies the optional extra in the brief and nothing more.
+   limiting. It is what the brief listed as an optional extra and it is the right size for that. A
+   service taking traffic from several external systems wants per-caller identity instead, which
+   means JWT bearer tokens or mutual TLS. That is not only about authentication: it would let the
+   audit trail record *which* upstream system reported a change rather than merely that a progress
+   event did, and it would make revocation and rate limiting per-caller rather than
+   all-or-nothing.
 6. **No pagination beyond a page number.** Deep paging with `Skip` degrades; keyset pagination would
    be the answer at scale.

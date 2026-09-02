@@ -215,7 +215,8 @@ extra layer would have been ceremony.
 ## Testing
 
 `dotnet test` runs 56 tests: 34 domain tests, and 22 integration tests driving the real application
-through `WebApplicationFactory`.
+through `WebApplicationFactory`. They are written Arrange, Act, Assert, and named as sentences
+describing behaviour rather than the method under test.
 
 The integration tests run against **SQLite**, in a temporary file created per test class and deleted
 afterwards. Four consequences a reviewer should know about rather than discover:
