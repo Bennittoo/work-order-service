@@ -16,8 +16,10 @@ Design decisions and trade-offs are in [SOLUTION.md](SOLUTION.md). How AI toolin
 docker compose up -d
 ```
 
-This starts SQL Server 2022 on `localhost:1433` with the credentials the default connection string
-expects. Wait for the container to report healthy:
+This starts SQL Server 2022 on `localhost:14330` with the credentials the default connection string
+expects. Port 14330 rather than 1433 is deliberate: if you already have SQL Server installed it is
+listening on 1433, Windows allows both to bind it, and your local instance wins the connection while
+the container sits there unreachable. Wait for the container to report healthy:
 
 ```bash
 docker compose ps

@@ -10,7 +10,10 @@ services:
       # while committing it would be worse.
       MSSQL_SA_PASSWORD: "Local_Dev_Passw0rd!"
     ports:
-      - "1433:1433"
+      # Published on 14330 rather than 1433 on purpose. A developer machine with SQL Server already
+      # installed is listening on 1433, and Windows lets both bind it, so the local instance wins the
+      # connection and the container is silently unreachable.
+      - "14330:1433"
     volumes:
       - mssql-data:/var/opt/mssql
     healthcheck:
