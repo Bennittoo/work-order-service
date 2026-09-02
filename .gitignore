@@ -6,3 +6,7 @@ bin/
 obj/
 *.user
 .vs/
+
+# Visual Studio may regenerate the XML solution format, which the .NET 8 SDK cannot open and
+# which breaks root-level dotnet build/test by making the folder ambiguous.
+*.slnx

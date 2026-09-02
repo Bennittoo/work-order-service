@@ -153,6 +153,12 @@ a user changing status while the worker processes an event is a genuine concurre
 single consumer. On conflict the worker re-reads and re-evaluates the transition against current
 state, bounded by `MaxProcessingAttempts`; the endpoint returns 409.
 
+The token is verified live against SQL Server: a stale writer gets a
+`DbUpdateConcurrencyException`, and its write leaves nothing behind, so there is no partial status
+change and no orphan history row. The HTTP 409 itself has not been forced end to end, because the
+conflict window sits between the read and the write inside a single request and cannot be entered
+from outside.
+
 Re-reading is the right response rather than forcing the write through: if the work order moved on,
 the transition the event proposed may no longer be legal, and that judgement belongs to the state
 machine.
@@ -203,6 +209,19 @@ schema is built from the model instead). The migration was applied to a real SQL
 
 Provider-specific behaviour sits behind `IUniqueConstraintDetector`, so the tests swap the
 interpretation of a unique-key violation rather than the logic that depends on it.
+
+### Verified by hand, beyond the suite
+
+Everything the suite cannot reach was run against the containerised SQL Server rather than assumed:
+
+- The documented setup end to end with no configuration overrides: `docker compose up`, the
+  migration, then the service.
+- The same `eventId` submitted three times, giving one status change, one history entry and one
+  `ProcessedEvents` row.
+- Queue exhaustion, by starting with `QueueCapacity=1` and firing forty events concurrently: 16
+  accepted and 24 refused with 503 and `Retry-After`.
+- The concurrency token, as described above.
+- The generated OpenAPI document, checked field by field rather than eyeballed in the UI.
 
 ## What I chose not to build
 
