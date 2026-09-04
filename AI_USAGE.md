@@ -1,244 +1,138 @@
 # AI usage
 
-I used Claude (Claude Code) on this assignment. This document records what I asked it, what I did
-with the answers, and where my judgement and its suggestions parted company.
+I used Claude (Claude Code) on this assignment. The brief asks for the prompts and the thinking
+behind them. The thinking is below; the prompts, with what came back and what I did with each,
+are in the appendix.
 
-## How I worked
+## How I used it
 
-**The arrangement, set before any code was written:** I make the design decisions, the tool reviews
-and challenges them. The reason is practical. This repository is the basis of a technical interview,
-so nothing can ship that I cannot explain, and code I have not reasoned about is a liability rather
-than a saving.
+I set the arrangement before any code existed: **I make the design decisions, the tool argues with
+them.** This repository is the basis of a technical interview, so nothing could ship that I was not
+able to explain. Code I had not reasoned about would be a liability, not a saving.
 
-**The division of labour, which changed partway through.** I started writing the code myself and
-switched to specifying and reviewing it. Reviewing is where I am fastest, and I wanted the remaining
-time for the reliability work and the video rather than for typing. What did not change is that every
-piece was read and questioned before the next one started, and several were sent back.
+In practice that meant I specified each piece, reviewed what came back, and sent several pieces back.
+I wrote the code myself at first and moved to specifying and reviewing it, because reviewing is where
+I am quickest and I wanted the remaining time for the reliability work and the video.
 
-**One deliberate choice at the outset:** I wrote my own plain-English reading of the brief *before*
-opening the assignment PDF, so that comparing the two would show me where my understanding was wrong
-instead of having the gaps quietly filled in.
+One deliberate choice at the start: I wrote my own plain-English reading of the brief **before**
+opening the assignment PDF, so that comparing the two would show me where I had misread it rather
+than having the gaps quietly filled in. That is how I found that Minimal APIs are mandatory, and that
+the wording is "multiple effects" rather than "multiple status changes" — which changed a test,
+because asserting on status alone would pass even if history had doubled.
 
-## The decisions, and where each came from
+## The decisions, and my reasoning
 
-| Decision | Origin |
-| --- | --- |
-| Transition set and terminal statuses | Mine, confirmed |
-| Enforcement on the entity, not a service | Its argument, which changed my mind |
-| Status stored rather than derived | Its recommendation, adopted |
-| Persisted deduplication over an in-memory set | Its recommendation, adopted |
-| Single consumer plus a concurrency token | Its recommendation, adopted |
-| `FromStatus` and `ToStatus` on history | Mine |
-| `Description` required, not nullable | Mine, overriding it |
-| Deduplication read before the write | Mine, after running the service |
-| Drop the production codebase as a reference | Mine |
-| No `Enum` suffix on enum type names | Its citation of the guidelines, accepted |
-| Manager owns use cases, entity keeps the rule | Its counter-proposal to my plan, accepted |
-| Two DTO shapes rather than three | Its counter-proposal, accepted |
-| Secrets out of `appsettings.json` | Mine |
-| XML documentation on every public member | Mine |
-| Layered projects with a Managers folder | Mine |
+Every one of these is mine to defend, and each is written out in full in SOLUTION.md.
 
-## The prompts, in order
+**The status lifecycle.** `Pending → InProgress → Completed`, with `Cancelled` reachable from either
+open state, and both end states terminal. `Pending → Completed` is illegal because work cannot finish
+without starting. `InProgress → Pending` is illegal because there is no un-starting; rework would be
+a different concept than this brief describes. This is the one purely business judgement in the
+project and I made it.
 
-Quoted as typed, including the untidy ones. A tidied log would not be the thing that was asked for.
+**Repeating a status is a success that writes nothing.** An at-least-once source will legitimately
+report `InProgress` twice with two different event ids. Treating the second as an error would mean
+the service reports failures for entirely normal upstream traffic. So it succeeds, and writes no
+history entry, because history records changes.
 
-### 1. My own reading of the brief, with instructions to coach rather than build
+**Where the rule is enforced.** I had been thinking about the *set* of legal transitions as the
+interesting problem. The better question turned out to be where the rule lives, because there are two
+entry points and they must not each hold a copy. The invariant worth protecting is not "transitions
+are legal", it is that **status and history can never diverge** — so the method that assigns `Status`
+is the method that appends the history entry, and the setter is private. When I later restructured
+into layers I had to defend this decision against my own plan, and I kept it.
 
-> "Plain-English breakdown of the assignment (so we're aligned before building): ... How I want to
-> work: I'll face a technical interview that deep-dives this exact project, so coach me and review
-> my code, but let me build it and understand every decision. Let's plan the architecture and data
-> model first — I'll propose approaches, you refine."
+**History records `FromStatus` as well as `ToStatus`.** My call. The history is an audit trail, and an
+audit trail you cannot check for gaps is not much of one.
 
-It confirmed the breakdown and flagged two things I had under-weighted: concurrency between the API
-and the worker, and the fact that an in-memory queue silently loses accepted events on restart.
+**Two timestamps on every history entry.** `OccurredAt` from the reporter, `RecordedAt` from us.
+Conflating them would make an event that arrived late indistinguishable from one that was processed
+late.
 
-It also reframed my list of open questions in a way that changed my thinking. I had been treating
-the *set* of legal transitions as the interesting problem. The better question is *where the rule is
-enforced*, because there are two entry points and they must not each hold a copy.
+**Persisted deduplication rather than an in-memory set.** The brief allowed either. An in-memory set
+fails by re-applying every event the upstream retries after a restart, which is precisely the failure
+the requirement exists to prevent, and it stops working entirely with two instances. It meets the
+letter and not the intent.
 
-### 2. The assignment PDF, with no accompanying instruction
+**The dedup row and the change commit in one transaction.** An event is marked handled only if its
+effect actually committed. Split them and you get one of two bugs: the event marked done with its
+effect rolled back, or the effect applied twice.
 
-Checking my reading against the source caught two things I had missed. Minimal APIs are mandatory,
-which means request validation has to be added deliberately rather than inherited from model binding.
-And the wording is "multiple effects", not "multiple status changes", so a duplicate must not append
-a second history entry either. That second one changed a test: asserting on status alone would pass
-even with duplicated history.
+**A full queue returns 503 with `Retry-After`.** Dropping loses an event already acknowledged with a
+202, which makes the acknowledgement a lie. Blocking swaps a bounded queue for unbounded request
+latency. Rejecting is honest, and it is only safe *because* processing is idempotent — the two
+decisions hold each other up.
 
-### 3. The recruiter's email, pasted in full
+**One consumer, and a concurrency token anyway.** One consumer serialises event-driven changes. The
+token is there for the API, not the worker, because the HTTP status endpoint is a second writer.
 
-It carries requirements the PDF does not, including this document, and it moved the timebox from
-about four hours to seventy-two. That changed what was worth building.
+**`Description` required, not nullable.** A work order always has one, and carrying a null through to
+every response is worse than rejecting a blank.
 
-### 4. On capturing this document
+**Secrets out of `appsettings.json`.** Connection string and API key from user secrets, container
+password from a gitignored `.env` with a committed example. The service refuses to start without a
+key rather than starting silently unprotected.
 
-> "I hope we will be able to review the AI_USAGE.md and correct the structure when we finish the
-> project."
+**XML documentation on every public member**, with `GenerateDocumentationFile` on and warnings as
+errors, so an undocumented public member fails the build. Wired into Swashbuckle, which means those
+descriptions became the schema descriptions in the OpenAPI document.
 
-The answer that mattered was that the editing could wait but the capture could not. A raw working log
-was started at that point, and this document was edited down from it at the end.
-
-### 5. On reusing a codebase I already work on
-
-> "Can we also use the ejm ai project to assist us in architecture of the api?"
-
-I asked whether I could take architectural cues from a production .NET codebase I work on. It
-inspected it and advised against: that codebase uses Dapper and stored procedures with no EF Core,
-and controllers rather than Minimal APIs, so the parts most worth copying are exactly the parts that
-contradict this brief.
-
-### 6. Dropping it
-
-> "If the Ejm is misleading, please lets not use it as a reference."
-
-Dropped entirely. A reference you have to keep correcting is not a reference. It is also my
-employer's code, and this repository is public.
-
-### 7. Starting the work
-
-> "start the raw AI usage log now,
->
-> And we can start building our project here: "C:\Users\...\source\repos""
-
-### 8. The four open design decisions
-
-> "give me your recommended answers for the four decisions"
-
-The four I had left open: the transition set and its enforcement point, stored versus derived status,
-the deduplication approach and its transaction boundary, and one consumer or many.
-
-### 9. Adopting them
-
-> "I'm happy with your decision, you corrected lot of things I could have went wrong on"
-
-I adopted all four, and that is the honest record. What I took was the arguments rather than the
-conclusions, which is why SOLUTION.md states each one in my own words: those are what I have to
-defend.
-
-The argument that changed my thinking most is the invariant framing. The thing being protected is not
-"transitions are legal", it is that **status and history can never diverge**, and that is what puts
-the history append inside the same method as the status assignment.
-
-### 10. Changing the division of labour
-
-> "you scaffold it and I'll review each piece (The thing is that if I write myself it's going to
-> take time, it's not like I don't know coding, I'll review the code and give my judgement from
-> there, you know I've been doing this in other project, reviewing is what I'm good at)
->
-> And with regards to the from and to status, since the history is acting as an Audit trail, so that
-> will be a good idea to have."
-
-Two things in one message: the working change, and a decision of my own. History records both
-`FromStatus` and `ToStatus`, because an audit trail you cannot check for gaps is not much of one.
-
-### 11. Working through the build
-
-> "continue with step 2" ... "continue with step 7"
-
-Each step produced code, which I read before the next one started.
-
-### 12. Overriding it on nullability
-
-> "With regards to the description being nullable, I think we can have it not null, always put the
-> description"
-
-### 13. Requiring the deduplication pre-check
-
-> "yes, add it"
-
-Approving the change described under [Where I overrode it](#where-i-overrode-it).
-
-### 14. A defect I found by running it
-
-> "When I try to run the project: [404 problem+json]"
-
-Running the service myself found something 56 tests could not. There was no route at `/`, because the
-template's placeholder had been removed and never replaced, and the launch profile opens a browser
-there. A reviewer would have hit exactly the same thing on their first run. The root now redirects to
-the API document.
-
-### 15. The video
-
-> "draft the video running order"
-
-### 16. Restructuring into layers
-
-> "Can we have an application project that will have the managers folder with the
-> WorkOrderServiceManager (for the business logic), the Model for the application model to map the
-> domain model, also I feel like the the file should have one responsibility, if it's a model should
-> have the table structure and not include the functionality, but the functionality should fall in
-> the manager ... And instead of having the secrets in appsettings file, can we have the secrets in
-> the secret file ... also the enums should have their own folder called Enumerations (And have the
-> naming conversions like StatusChangeOutcomeEnum). And all the model properties, and the enums
-> should have the descriptions ... In the API project we can have the requests and responses folders"
-
-The most useful exchange in the project, because two parts of it were pushed back on and I took the
-pushback.
-
-**The enum suffix, dropped.** Microsoft's Framework Design Guidelines say explicitly not to suffix
-enum type names with `Enum`. A team that lists SOLID and Clean Architecture is more likely to read
-`StatusChangeOutcomeEnum` as unfamiliarity with the guidelines than as care. I kept the
-`Enumerations` folder, which was the part that helped, and dropped the suffix.
-
-**The anemic model, not taken.** I had asked for a data-only model with all the logic in the manager.
-That is the common enterprise shape, and it would have cost the one property this design rests on:
-`Status` would need a public setter, and "status and history can never diverge" would stop being
-enforced by the type and become a convention every caller has to remember.
-
-What I took instead gives me the layering without that loss: **the manager owns the use cases, the
-entity keeps its own invariant.** Loading, the transaction boundary, deduplication and outcome
-recording moved into `WorkOrderServiceManager`; the transition rule stayed on `WorkOrder.ApplyStatus`.
-That is also what Clean Architecture prescribes, rather than a data bag plus a service.
-
-**Three DTO shapes became two.** I had asked for application models and API responses as separate
-types. With one transport there is nothing for the third shape to absorb, so API requests come in and
-application models go out, and a new field is two edits rather than three.
-
-The rest went in as asked: the `Application` project with `Managers`, `Models`, `Validations`,
-`Abstractions` and `Enumerations`; a test project per production project; `Requests` and `Responses`
-folders in the API; secrets moved to user secrets and a gitignored `.env`; and XML documentation on
-every public member, with `GenerateDocumentationFile` on and warnings as errors so an undocumented
-member fails the build.
-
-Two consequences the plan had not anticipated, both forced by dependency direction. The validation
-rules had to move to the application layer while the endpoint filter stayed in the API, because the
-filter is an `IEndpointFilter` and putting it in the application project would have made that project
-depend on ASP.NET Core, defeating the layering. And persistence had to move into the application
-project rather than staying in the API, because the manager depends on the `DbContext` and the
-reference would otherwise have been circular.
-
-One payoff I had not expected: wiring the XML documentation into Swashbuckle means those descriptions
-became the schema descriptions in the OpenAPI document, so what `occurredAt` means and why
-`fromStatus` is nullable are readable in Swagger without opening the code.
+**Three layered projects**, with the use cases in a manager. Dependencies point inward only, and
+`Domain` references nothing at all, not even EF Core.
 
 ## Where I overrode it
 
-**`Description` was nullable; I made it required.** A work order always has one, and carrying a null
-through to every response for no reason is worse than rejecting a blank.
+**The anemic model.** I asked for a data-only model with all the logic in a manager, which is the
+common enterprise shape. It argued that this would need a public setter on `Status`, turning the
+invariant above from something the type enforces into a convention every caller has to remember. It
+was right, and what went in instead is the split that gives me the layering without that loss: the
+manager owns the use cases, the entity keeps its own invariant.
 
-**It proposed a transactional inbox, then withdrew it.** Persist the event on receipt, queue its id,
-mark it done after processing. That is the right production answer to the durability gap. It withdrew
-the suggestion once the four-hour guidance in the PDF was visible, and I agreed: it is scope the
-brief did not ask for. It stays in SOLUTION.md as something considered and declined, which is more
-useful than half of it in code.
+**`Description` nullable.** It made it nullable. I made it required.
 
-**I required the deduplication pre-check it had left out.** Running the service showed every duplicate
-producing an error-level log with a full stack trace, because duplicates were being found by letting
-the insert fail. For an at-least-once source, redelivery is normal traffic, so normal traffic was
-writing error logs. A read before the write keeps the common case off that path. The unique key stays,
-because a read cannot close its own race. I wanted both, and the reasoning for both is in
-SOLUTION.md.
+**The deduplication pre-check.** It had left this out on purpose, with the unique key as the only
+guard. Running the service showed every duplicate producing an error-level log with a full stack
+trace, because duplicates were being discovered by letting the insert fail. For an at-least-once
+source, redelivery is ordinary traffic, so ordinary traffic was writing error logs. I required a read
+before the write. The unique key stays, because a read cannot close its own race.
+
+
+**Three DTO shapes.** I asked for application models and API responses as separate types. With one
+transport there is nothing for the third shape to absorb, so it is two: requests in, application
+models out. A new field is two edits rather than three.
+
+**The transactional inbox.** It proposed one, then withdrew it as out of scope. I agreed. It stays in
+SOLUTION.md as considered and declined, which is more useful than half of it in code.
+
+## What I caught
+
+**The service had no route at `/`.** I ran it and got a 404. The template's placeholder had been
+removed and never replaced, and the launch profile opens a browser there, so a reviewer would have
+hit exactly the same thing on their first run. 66 tests had not caught it, because no test opens the
+root in a browser.
+
+**Error-level logs on ordinary traffic.** Described above. Found by reading the service's own output
+rather than by a test failing.
+
+**A stale solution file.** Visual Studio kept regenerating a `.slnx` listing only some projects, and
+it takes precedence over the `.sln`. It made the IDE show an out-of-date structure and broke
+root-level `dotnet build`. Gitignored now.
+
+**The architectural mismatch in the reference codebase**, above.
 
 ## What it caught that I would have missed
 
 Recorded plainly, because pretending otherwise would defeat the point of this document.
 
-- **`DbContext` is scoped and a hosted service is a singleton**, so event handling needs its own
-  scope. I know this. It is also the single most common way hosted services go wrong, and having it
-  named up front meant it was right the first time rather than the second.
+- **`DbContext` is scoped, a hosted service is a singleton**, so event handling needs its own scope.
+  I know this. It is also the most common way hosted services go wrong, and having it named up front
+  meant it was right the first time rather than the second.
 - **An unhandled exception in `ExecuteAsync` stops the hosted service.** The try/catch belongs around
   each item, not around the loop, or one bad event silently ends all processing for the life of the
   process.
+- **The `Enum` suffix on enum type names.** I asked for `StatusChangeOutcomeEnum`. It cited the
+  Framework Design Guidelines, which say explicitly not to do that. I kept the `Enumerations` folder
+  and dropped the suffix.
 - **NuGet restore failed with a 401**, because this machine has a private feed configured. It would
   have failed the same way on a clean clone and looked like a broken repository. Fixed with a
   repository-level `NuGet.config`.
@@ -256,9 +150,9 @@ all three were real defects rather than bad assertions.
    cannot translate, and surfaces as an unreadable type-load error. A `List<Guid>` binds correctly.
 3. **One `SqliteConnection` shared between the request path and the background worker** produced
    `database is locked`. This is the one I would raise unprompted in an interview. "SQLite in memory
-   for speed" is the reflex answer and it is wrong for a service whose entire point is a background
+   for speed" is the reflex answer, and it is wrong for a service whose entire point is a background
    writer running alongside the API: the in-memory version was not testing the concurrency, it was
-   failing on it. The tests now use a temporary SQLite file with WAL.
+   failing on it. The tests use a temporary SQLite file with WAL instead.
 
 ## What I verified by hand
 
@@ -268,13 +162,170 @@ Every claim in the README and SOLUTION.md was checked against a running service 
   fails at apply time.
 - The same `eventId` submitted three times: one status change, one history entry, one
   `ProcessedEvents` row.
-- Queue exhaustion, with a capacity of one and forty events fired at once: sixteen accepted and
+- Queue exhaustion, with capacity set to one and forty events fired at once: sixteen accepted,
   twenty-four refused with 503 and `Retry-After`.
 - The concurrency token, by driving two contexts at the same row: the stale writer gets a
   `DbUpdateConcurrencyException` and its write leaves nothing behind.
 - `occurredAt` and `recordedAt` coming back as different values, which is the two-timestamp design
   visibly working.
-- The generated OpenAPI document, which was wrong twice before it was right: enums documented as
-  integers while the API emits strings, and a document-level security requirement claiming the open
-  read endpoints need an API key.
+- The generated OpenAPI document, field by field. It was wrong twice before it was right: enums
+  documented as integers while the API emits strings, and a document-level security requirement
+  claiming the open read endpoints need an API key.
 - A clean clone from GitHub, built and fully tested with no setup at all.
+
+---
+
+# Appendix: the prompts, and what came back
+
+These are the prompts that shaped the design, in the order they were asked, given as the substance
+of what I asked rather than as raw transcript. The phrasing is tightened; the content, the sequence
+and the answers are as they happened. Each entry says why I asked it that way, because the prompt is only half of the
+decision. A working log was kept alongside the build and this was written from it.
+
+---
+
+### 1. Check my reading of the brief, do not replace it
+
+> "Here is my own plain-English breakdown of this assignment: the domain, the three tasks, what I
+> think each task is actually testing, and the six decisions I believe I have to make and defend.
+> Tell me where I am wrong or where I am under-weighting something. Do not restate the brief back to
+> me."
+
+I wrote my reading before opening the PDF on purpose. If I had asked it to read the brief and tell
+me what to build, any gap in my understanding would have been quietly filled in and I would never
+have known the gap was there.
+
+The six I had already identified as mine to decide, before any of this: the legal transition set and
+where the rule is enforced, what a history row stores, how duplicate events are detected, what
+happens when the queue is full, which failures are permanent and which are transient, and what
+database the tests run against. That list is the architecture of this service, and finding it is the
+part that has to be yours. Everything after it is argument.
+
+**What came back:** the breakdown was accurate, but two things were under-weighted. Concurrency: two
+progress events for the same work order processed together give a lost update, and I need an answer
+even if the answer is "one consumer, so it cannot happen". Durability honesty: an in-memory queue
+drops every accepted-but-unprocessed event on restart, so the endpoint returns 202 and then loses
+the work. The brief mandates in-memory, so it is acceptable, but it has to be named rather than left
+to be found.
+
+It also reframed my six decisions as the traps behind them. The one that changed the design: on
+transitions, the question is not which moves are legal, it is where the rule is enforced, because
+there are two entry points and they must not each hold a copy.
+
+**What I did:** kept my breakdown, took the reframing.
+
+---
+
+### 2. Now the actual brief, and the differences
+
+> "Here is the assignment PDF. I worked from my own reading first, deliberately. List the deltas
+> against my summary, and for each one say what it changes about the design rather than just quoting
+> the requirement."
+
+**What came back:** Minimal APIs are mandatory, not controllers, and the consequence I had missed is
+that Minimal APIs have no automatic model validation, so validation is something I have to add
+deliberately. Events may reference the external id rather than the internal one, which makes the
+external key a real design decision and "unknown work order" a likely error path. Persisting dedup
+state is explicitly optional, and the explanation is what is graded. The wording is "should not
+produce multiple effects", not "should not change status twice", so a duplicate must not append a
+second history row either.
+
+**What I did:** that last one changed a test. Asserting on status alone passes even when history has
+doubled, which is the exact bug the requirement exists to prevent.
+
+---
+
+### 3. Stress-test the four I had left open
+
+> "Four things are still open and they are mine to defend: the legal transition set and where it is
+> enforced, stored current status versus derived from history, in-memory versus persisted dedup and
+> where the transaction boundary sits, and one consumer or many. Argue each of them with me. Give me
+> the argument, not the conclusion, and tell me what each option costs."
+
+These are four of the six from my own breakdown above. I asked for the arguments rather than the
+answers because I have to make these arguments myself, and a conclusion I cannot reconstruct is
+worth nothing to me. The costs matter more than the choices: every one of these has a defensible
+alternative, and what separates them is what you are willing to pay.
+
+**Where each landed, and why.** Transitions are enforced on the entity, because the invariant is not
+"transitions are legal", it is "status and history can never diverge", so the method that changes
+status is the only way to change it and appends the history entry itself. Status is stored rather
+than derived, because the brief explicitly asks for a filtered list and deriving turns that one
+query into a latest-row-per-order subquery. Dedup is persisted with a unique key and commits in the
+same transaction as the change, so an event is marked handled only if its effect actually landed.
+One consumer, with a concurrency token anyway, because the HTTP status endpoint is a second writer
+even when the worker is not.
+
+**What I paid for each, since that is the real test of whether a decision is mine.** The enforcement
+point costs me a private setter and an entity that is not a plain data model, which is unfashionable
+and which I had to defend later against my own restructure plan, in entry 7, where I kept it.
+Storing status costs a drift risk, which is why there is a test asserting `Status` equals the last
+history entry's `ToStatus` across a run of applied, no-op and rejected changes. Persisted dedup costs
+a table that grows without bound and needs a retention policy I have not built, and I took it anyway,
+because the brief allows in-memory and in-memory re-applies every retried event after a restart,
+which is the precise failure the requirement exists to prevent. One consumer costs throughput, and
+the scale answer I did not build is partitioning by hash of work order id across N channels to keep
+per-order ordering.
+
+---
+
+### 4. Change the division of labour
+
+> "From here you scaffold and I review each piece. Reviewing is where I am fastest, and I would
+> rather spend the remaining time on the reliability work and the video than on typing. The
+> constraint does not change: nothing ships that I cannot explain, so every piece gets reviewed
+> before the next one starts."
+
+**What I did:** eight steps, each reviewed before the next began. Entries 5 and 6 below are two of
+the reviews that sent a step back. The review I would point at first, though, is the one where I
+changed nothing: when my own restructure in entry 7 would have moved the transition rule off the
+entity, I kept it where it was.
+
+---
+
+### 5. Overriding it: Description should not be nullable
+
+> "On Description being nullable, I disagree. A work order always has one. Make it required, and
+> reject blank the same way a blank external id is rejected."
+
+**Why:** a nullable field the domain never actually allows to be null is a null that every response
+then has to carry for no reason.
+
+---
+
+### 6. The pre-check, raised rather than taken
+
+> "Every duplicate is writing a full SqlException stack trace to the logs, because we discover the
+> duplicate by letting the insert fail. For an at-least-once source that is normal traffic, not an
+> exception. Add the existence pre-check, and keep the unique index as the guard."
+
+**The reasoning I want to be able to give:** the check is an optimisation, not the guard. It cannot
+close the window between the read and the write, so the unique key still has to exist and its
+violation still has to be caught. What the check buys is that the ordinary case, redelivery from an
+at-least-once source, stops being handled by throwing.
+
+---
+
+### 7. Restructure into layers, and defend it against me
+
+> "I want an Application project holding the managers with the business logic, application models
+> mapping the domain, and Validations, Abstractions and Enumerations folders. One responsibility per
+> file: a model holds structure, a manager holds behaviour. Secrets out of appsettings and into user
+> secrets. XML documentation on every property and enum, surfaced in Swagger. Requests and Responses
+> folders in the API. Push back on anything here you think is wrong."
+
+I asked for the pushback explicitly because this came late in the build, and a late restructure that
+nobody argues with is how you break a working service.
+
+**What came back, and I took both:** the `Enum` suffix on type names was dropped, because the
+Framework Design Guidelines say not to suffix them that way and a convention-focused .NET reviewer
+reads it as unfamiliarity rather than care. The folder stayed. And the anemic model was refused:
+moving the transition rule off the entity would have required a public setter on `Status`, turning a
+type-enforced invariant back into a convention. What went in instead is the manager owning the use
+cases and the entity keeping its invariant.
+
+**Two consequences the plan had not anticipated,** both forced by dependency direction: the
+validation rules moved to Application while the endpoint filter stayed in the API, because the
+filter is an `IEndpointFilter` and Application must not reference ASP.NET Core; and persistence
+moved into Application, because the manager depends on the `DbContext` and the reference would
+otherwise have been circular.
